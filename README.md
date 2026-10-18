@@ -29,3 +29,24 @@ genealogy exports contain living people.
 - **Nation of birth** is inferred from the birth place text (`viewer/viewer.html`, `nationOf`),
   reading components from the last one backwards. Places with no recognisable country,
   state or county are reported as *Unknown*.
+
+## Merging ancestry from other exports
+
+`tools/merge_lineage.py` extends a base GEDCOM with one person's direct ancestry
+from other GEDCOM files, walking both pedigrees in step from that person:
+
+```sh
+python3 tools/merge_lineage.py --base base.ged --root @I123@ \
+    --donor most_trusted.ged --donor next.ged --out merged.ged --report report.md
+```
+
+- A parent missing from the base is grafted in from a donor only if the
+  parent–child dates are plausible (mother 12–55 years older, father 14–80,
+  child not born after the parent's death) and the donor's family for that
+  child does not otherwise contradict the base.
+- Matched people get missing birth/death dates and places filled in; nothing
+  already in the base is overwritten, except two kinds of correction that are
+  logged: father/mother entered the wrong way round, and a parent's birth year
+  replaced when the base's year fails the date checks and a donor's passes.
+- Grafted people carry a NOTE naming the donor file. The report lists every
+  addition, correction, conflict and rejected link for review.
