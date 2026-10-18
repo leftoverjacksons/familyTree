@@ -1,0 +1,702 @@
+<title>King Family Tree</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,400&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+/* Layout: one-screen app. Toolbar on top, pan/zoom pedigree canvas filling the rest,
+   person record as a right-hand drawer (bottom sheet on phones), nation legend floating bottom-left. */
+:root {
+  --bg: #eef1f4;          /* cool archival paper */
+  --surface: #ffffff;
+  --ink: #1d2733;         /* iron-gall ink, blue-black */
+  --muted: #5d6a79;
+  --rule: #cfd6de;
+  --accent: #23507a;      /* register blue */
+  --card: #ffffff;
+  --card-sel: #e3ecf5;
+  --shadow: 0 1px 2px rgba(20,35,55,.10), 0 2px 8px rgba(20,35,55,.06);
+  --font-display: "Spectral", "Iowan Old Style", Georgia, serif;
+  --font-body: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161d; --surface: #182029; --ink: #e3e9f0; --muted: #94a2b2; --rule: #2c3846;
+    --accent: #8fb7e0; --card: #1b242e; --card-sel: #24364a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161d; --surface: #182029; --ink: #e3e9f0; --muted: #94a2b2; --rule: #2c3846;
+  --accent: #8fb7e0; --card: #1b242e; --card-sel: #24364a;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.25);
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 14px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- toolbar ---------- */
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+  padding-block: 10px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--surface); border-bottom: 1px solid var(--rule); position: relative; z-index: 5;
+}
+.brand { display: flex; flex-direction: column; min-width: 0; }
+.brand h1 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.1; letter-spacing: .01em; }
+.brand .stats { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-left: auto; }
+.search { position: relative; }
+.search input {
+  width: 240px; max-width: 70vw; padding: 7px 10px; border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--bg);
+}
+.results {
+  position: absolute; top: calc(100% + 4px); left: 0; width: 320px; max-width: 86vw; max-height: 360px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; box-shadow: var(--shadow); z-index: 20;
+}
+.results button {
+  display: flex; justify-content: space-between; gap: 10px; width: 100%; text-align: left; padding: 7px 10px;
+  border: 0; background: none; cursor: pointer; border-bottom: 1px solid var(--rule);
+}
+.results button:hover, .results button.active { background: var(--card-sel); }
+.results .yrs { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: none; padding: 6px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
+.gen { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.gen button { width: 28px; height: 28px; border: 1px solid var(--rule); border-radius: 6px; background: none; cursor: pointer; }
+.gen output { min-width: 1.5em; text-align: center; color: var(--ink); font-variant-numeric: tabular-nums; }
+.btn { border: 1px solid var(--rule); border-radius: 6px; background: none; padding: 6px 12px; cursor: pointer; }
+.btn:hover, .gen button:hover, .seg button:hover:not([aria-pressed="true"]) { background: var(--card-sel); }
+
+/* ---------- canvas ---------- */
+.main { flex: 1; min-height: 0; display: flex; }
+.stage { flex: 1; min-width: 0; min-height: 0; position: relative; }
+#chart { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+#chart:active { cursor: grabbing; }
+.link { fill: none; stroke-width: 2.6; stroke-linecap: round; transition: opacity .2s; }
+.link.unknown { stroke-dasharray: 4 5; }
+.node { cursor: pointer; transition: opacity .2s; }
+.node rect.card { fill: var(--card); stroke: var(--rule); stroke-width: 1; }
+.node.sel rect.card { fill: var(--card-sel); stroke: var(--accent); stroke-width: 1.5; }
+.node.root rect.card { stroke: var(--accent); stroke-width: 1.5; }
+.node .nm { font-family: var(--font-display); font-weight: 600; font-size: 14px; fill: var(--ink); }
+.node .sub { font-size: 11.5px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.node .ahn { font-family: var(--font-mono); font-size: 10px; fill: var(--muted); }
+.node .dup { font-size: 10.5px; fill: var(--muted); font-style: italic; }
+.toggle circle { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.toggle text { font-size: 12px; fill: var(--ink); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.toggle:hover circle { stroke: var(--accent); }
+.dim { opacity: .12; }
+.empty {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--muted);
+}
+.empty h2 { font-family: var(--font-display); color: var(--ink); font-weight: 500; margin: 0 0 8px; }
+
+/* ---------- legend ---------- */
+.legend {
+  position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: var(--shadow);
+  padding: 10px 12px; max-height: 45%; overflow-y: auto; min-width: 190px; max-width: calc(100% - 24px);
+}
+.legend h3 { margin: 0 0 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.legend .note { font-size: 11px; color: var(--muted); margin: 6px 0 0; max-width: 220px; }
+.legend ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.legend button {
+  display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 8px; width: 100%;
+  border: 0; background: none; padding: 3px 4px; border-radius: 4px; cursor: pointer; text-align: left;
+}
+.legend button:hover { background: var(--card-sel); }
+.legend button[aria-pressed="true"] { background: var(--card-sel); font-weight: 600; }
+.legend .sw { height: 0; border-top: 3px solid; }
+.legend .sw.unknown { border-top-style: dashed; }
+.legend .ct { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.legend summary { cursor: pointer; list-style: none; }
+.legend summary::-webkit-details-marker { display: none; }
+
+/* ---------- person drawer ---------- */
+.drawer {
+  width: 360px; max-width: 100%; border-left: 1px solid var(--rule); background: var(--surface);
+  overflow-y: auto; padding-block: 18px; padding-left: 20px; padding-right: max(20px, env(safe-area-inset-right, 0px));
+}
+.drawer .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+.drawer h2 { font-family: var(--font-display); font-weight: 600; font-size: 24px; line-height: 1.15; margin: 4px 0 2px; text-wrap: balance; }
+.drawer .life { color: var(--muted); font-variant-numeric: tabular-nums; }
+.drawer .nation { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-weight: 500; }
+.drawer .nation i { width: 18px; border-top: 3px solid; display: inline-block; }
+.drawer .actions { display: flex; gap: 8px; margin: 14px 0 6px; flex-wrap: wrap; }
+.drawer h4 { margin: 18px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+.facts { display: grid; grid-template-columns: 78px 1fr; gap: 6px 10px; margin: 0; }
+.facts dt { color: var(--muted); font-size: 12.5px; }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.facts .d { font-variant-numeric: tabular-nums; }
+.facts .p { color: var(--muted); font-size: 12.5px; }
+.rel { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.rel button { border: 0; background: none; padding: 4px 6px; margin: 0 -6px; border-radius: 4px; cursor: pointer; text-align: left; width: calc(100% + 12px); display: flex; justify-content: space-between; gap: 10px; }
+.rel button:hover { background: var(--card-sel); }
+.rel .yrs { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rel .lab { color: var(--muted); font-size: 12px; }
+.drawer .id { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: 18px; overflow-wrap: anywhere; }
+.drawer .x { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; padding: 0 2px; }
+.drawer .notes { font-size: 12.5px; color: var(--muted); margin: 0; padding-left: 16px; }
+.hint { color: var(--muted); font-size: 12.5px; }
+
+@media (max-width: 760px) {
+  .controls { margin-left: 0; width: 100%; }
+  .search, .search input { width: 100%; max-width: none; }
+  .search { flex: 1 1 100%; }
+  .main { flex-direction: column; }
+  .drawer { width: 100%; max-height: 42%; border-left: 0; border-top: 1px solid var(--rule);
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .legend { min-width: 0; }
+  .legend .note { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .link, .node { transition: none; } }
+</style>
+
+<header class="bar">
+  <div class="brand">
+    <h1 id="title">King Family Tree</h1>
+    <div class="stats" id="stats">Loading…</div>
+  </div>
+  <div class="controls">
+    <div class="search">
+      <input id="q" type="search" placeholder="Find a person…" autocomplete="off" aria-label="Find a person">
+      <div class="results" id="results" hidden></div>
+    </div>
+    <div class="seg" role="group" aria-label="Direction">
+      <button id="mode-anc" aria-pressed="true">Ancestors</button>
+      <button id="mode-desc" aria-pressed="false">Descendants</button>
+    </div>
+    <div class="gen" aria-label="Generations shown">
+      Generations
+      <button id="gen-minus" aria-label="Fewer generations">−</button>
+      <output id="gen-val">5</output>
+      <button id="gen-plus" aria-label="More generations">+</button>
+    </div>
+    <button class="btn" id="fit">Fit</button>
+    <label class="btn" for="file" style="display:inline-block">Open .ged</label>
+    <input id="file" type="file" accept=".ged,.gedcom,text/plain" hidden>
+  </div>
+</header>
+
+<div class="main">
+  <div class="stage">
+  <svg id="chart" role="img" aria-label="Family tree diagram"></svg>
+  <div class="empty" id="empty" hidden>
+    <div>
+      <h2>No GEDCOM loaded</h2>
+      <p>Choose “Open .ged” or drop a GEDCOM file anywhere on this page.<br>The file is read in your browser and is not uploaded.</p>
+    </div>
+  </div>
+  <aside class="legend" id="legend" aria-label="Nation of birth"></aside>
+  </div>
+  <aside class="drawer" id="drawer" hidden></aside>
+</div>
+
+<script type="text/plain" id="gedcom-data">/*GEDCOM*/</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+"use strict";
+
+/* ============================================================
+   GEDCOM parsing
+   ============================================================ */
+function parseGedcom(text) {
+  const lines = text.replace(/^﻿/, "").split(/\r\n|\r|\n/);
+  const root = { children: [] };
+  const stack = [root];
+  for (const raw of lines) {
+    if (!raw.trim()) continue;
+    const m = raw.match(/^\s*(\d+)\s+(@[^@]+@\s+)?(\S+)(?:\s(.*))?$/);
+    if (!m) continue;
+    const level = +m[1];
+    const node = { level, xref: m[2] ? m[2].trim() : null, tag: m[3], value: m[4] ?? "", children: [] };
+    if (node.tag === "CONC" || node.tag === "CONT") {
+      const parent = stack[level];
+      if (parent) parent.value += (node.tag === "CONT" ? "\n" : "") + node.value;
+      continue;
+    }
+    stack.length = level + 1;
+    (stack[level] || root).children.push(node);
+    stack[level + 1] = node;
+  }
+  const people = new Map(), fams = new Map();
+  const first = (n, tag) => n.children.find(c => c.tag === tag);
+  const all = (n, tag) => n.children.filter(c => c.tag === tag);
+  const event = n => n && {
+    date: (first(n, "DATE")?.value || "").trim(),
+    place: (first(n, "PLAC")?.value || "").trim(),
+    type: (first(n, "TYPE")?.value || "").trim(),
+    note: (first(n, "NOTE")?.value || "").trim(),
+  };
+  for (const rec of root.children) {
+    if (rec.tag === "INDI" && rec.xref) {
+      const names = all(rec, "NAME").map(n => {
+        const v = n.value;
+        const given = (first(n, "GIVN")?.value ?? v.split("/")[0]).trim();
+        const surname = (first(n, "SURN")?.value ?? (v.split("/")[1] || "")).trim();
+        const suffix = (first(n, "NSFX")?.value ?? "").trim();
+        return { given, surname, suffix };
+      });
+      const nm = names[0] || { given: "", surname: "", suffix: "" };
+      const events = [];
+      for (const c of rec.children) {
+        if (["NAME", "SEX", "FAMC", "FAMS", "SOUR", "OBJE", "NOTE"].includes(c.tag) || c.tag.startsWith("_")) continue;
+        const e = event(c);
+        if (!e.date && !e.place && !e.type) continue;
+        events.push({ tag: c.tag, ...e });
+      }
+      people.set(rec.xref, {
+        id: rec.xref,
+        given: nm.given, surname: nm.surname, suffix: nm.suffix,
+        altNames: names.slice(1),
+        sex: (first(rec, "SEX")?.value || "U").trim(),
+        birth: event(first(rec, "BIRT")) || event(first(rec, "BAPM")) || event(first(rec, "CHR")),
+        death: event(first(rec, "DEAT")) || event(first(rec, "BURI")),
+        events,
+        famc: all(rec, "FAMC").map(c => c.value.trim()),
+        fams: all(rec, "FAMS").map(c => c.value.trim()),
+        sources: all(rec, "SOUR").length,
+        notes: all(rec, "NOTE").map(c => c.value).filter(Boolean),
+      });
+    } else if (rec.tag === "FAM" && rec.xref) {
+      fams.set(rec.xref, {
+        id: rec.xref,
+        husb: first(rec, "HUSB")?.value.trim() || null,
+        wife: first(rec, "WIFE")?.value.trim() || null,
+        chil: all(rec, "CHIL").map(c => c.value.trim()),
+        marr: event(first(rec, "MARR")),
+        div: event(first(rec, "DIV")),
+      });
+    }
+  }
+  // Repair one-sided links: GEDCOM merges often list a child in FAM but omit the FAMC (or vice versa).
+  for (const f of fams.values()) {
+    for (const cid of f.chil) { const p = people.get(cid); if (p && !p.famc.includes(f.id)) p.famc.push(f.id); }
+    for (const sid of [f.husb, f.wife]) { const p = people.get(sid); if (p && !p.fams.includes(f.id)) p.fams.push(f.id); }
+  }
+  for (const p of people.values()) {
+    for (const fid of p.famc) { const f = fams.get(fid); if (f && !f.chil.includes(p.id)) f.chil.push(p.id); }
+  }
+  for (const p of people.values()) {
+    p.name = [p.given, p.surname, p.suffix].filter(Boolean).join(" ") || "(no name)";
+    p.by = yearOf(p.birth?.date); p.dy = yearOf(p.death?.date);
+    p.nation = nationOf(p.birth?.place || "");
+  }
+  return { people, fams };
+}
+
+function yearOf(d) {
+  if (!d) return null;
+  const m = d.match(/\b(1[0-9]{3}|20[0-9]{2})\b/);
+  return m ? +m[1] : null;
+}
+const approx = d => /\b(abt|about|bef|before|aft|after|est|cal|circa|ca|bet|between)\b|~|\?/i.test(d || "");
+
+/* ============================================================
+   Birthplace → nation. Reads the place from its last component backwards,
+   because GEDCOM places run "town, county, state, country".
+   ============================================================ */
+const US_STATES = ["alabama","alaska","arizona","arkansas","california","colorado","connecticut","delaware","florida","georgia","hawaii","idaho","illinois","indiana","iowa","kansas","kentucky","louisiana","maine","maryland","massachusetts","massassachusetts","michigan","minnesota","mississippi","missouri","montana","nebraska","nevada","new hampshire","new jersey","new mexico","new york","north carolina","north dakota","ohio","oklahoma","oregon","pennsylvania","rhode island","south carolina","south dakota","tennessee","texas","utah","vermont","virginia","virgnia","washington","west virginia","wisconsin","wyoming","district of columbia"];
+const US_ABBR = ["al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il","in","ia","ks","ky","la","me","md","ma","mi","mn","ms","mo","mt","ne","nv","nh","nj","nm","ny","nc","nd","oh","ok","or","pa","ri","sc","sd","tn","tx","ut","vt","va","wa","wv","wi","wy","dc","ala","fla","ark","conn","mass","tenn","penn","miss","n c","s c","n y"];
+const US_WORDS = ["usa","us","u s a","u s","united states","united states of america","america","colonial america","british america","british colonial america","american colonies","colonial virginia","georgia colony","virginia colony","new england"];
+const ENGLISH = ["england","eng","london","yorkshire","shropshire","staffordshire","devon","south devon","cornwall","kent","essex","sussex","surrey","lancashire","cheshire","norfolk","suffolk","somerset","dorset","wiltshire","hampshire","gloucestershire","worcestershire","warwickshire","herefordshire","derbyshire","nottinghamshire","lincolnshire","leicestershire","northamptonshire","oxfordshire","buckinghamshire","bedfordshire","hertfordshire","cambridgeshire","berkshire","middlesex","durham","northumberland","cumberland","westmorland","whitby","southampton","northampton","salisbury","potesbury shropshire"];
+const NATIONS = [
+  ["Northern Ireland", ["northern ireland","ulster","antrim","county antrim","down","armagh","tyrone","fermanagh","londonderry","derry"]],
+  ["Ireland", ["ireland","eire","irish free state","cork","dublin","kerry","galway","limerick","tipperary"]],
+  ["Scotland", ["scotland","edinburgh","glasgow","aberdeen","lanarkshire","fife","perthshire","ayrshire"]],
+  ["Wales", ["wales","glamorgan","pembrokeshire","carmarthenshire","denbighshire"]],
+  ["England", ENGLISH],
+  ["Canada", ["canada","upper canada","lower canada","ontario","on canada","on","quebec","nova scotia","new brunswick","manitoba","british columbia","ottawa","toronto","prince edward island","newfoundland"]],
+  ["Germany", ["germany","deutschland","prussia","preussen","bavaria","bayern","württemberg","wurttemberg","hesse","hessen","saxony","holy roman empire"]],
+  ["France", ["france"]],
+  ["Netherlands", ["netherlands","holland","nederland"]],
+  ["Italy", ["italy","italia"]],
+  ["Switzerland", ["switzerland","schweiz","suisse"]],
+  ["Sweden", ["sweden","sverige"]],
+  ["Norway", ["norway","norge"]],
+  ["Denmark", ["denmark","danmark"]],
+  ["Spain", ["spain","españa"]],
+  ["Mexico", ["mexico"]],
+  ["Cuba", ["cuba"]],
+  ["United States", [...US_WORDS, ...US_STATES, ...US_ABBR]],
+];
+const UK_WORDS = ["united kingdom","uk","u k","great britain","britain","gb"];
+const NATION_LOOKUP = new Map();
+for (const [nation, words] of NATIONS) for (const w of words) if (!NATION_LOOKUP.has(w)) NATION_LOOKUP.set(w, nation);
+
+function normTok(s) {
+  return s.toLowerCase().replace(/\(.*?\)/g, " ").replace(/[.'’)?(]/g, " ").replace(/\b(county|co|colony|state of)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+function nationOf(place) {
+  if (!place) return "Unknown";
+  const parts = place.split(",").map(normTok).filter(Boolean);
+  let sawUK = false;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (UK_WORDS.includes(p)) { sawUK = true; continue; }
+    if (NATION_LOOKUP.has(p)) return NATION_LOOKUP.get(p);
+    // Components without commas, e.g. "Whitesville Georgia USA" or "Russell County Alabama USA"
+    const words = p.split(" ");
+    for (let n = Math.min(4, words.length); n >= 1; n--) {
+      for (let s = words.length - n; s >= 0; s--) {
+        const w = words.slice(s, s + n).join(" ");
+        if (w.length < 3 && words.length > 1 && s !== words.length - 1) continue; // 2-letter words count only at the end ("Weston Ct")
+        if (UK_WORDS.includes(w)) { sawUK = true; continue; }
+        if (NATION_LOOKUP.has(w)) return NATION_LOOKUP.get(w);
+      }
+    }
+  }
+  return sawUK ? "United Kingdom" : "Unknown";
+}
+
+/* Fixed hues for nations in this tree; each reads on both the light and dark ground. */
+const NATION_COLORS = {
+  "United States": "#3f73c9", "England": "#c9463d", "Scotland": "#1f9a8a", "Ireland": "#3d9a4a",
+  "Northern Ireland": "#93ad2c", "Wales": "#d68a16", "United Kingdom": "#a2588a", "Canada": "#8a5fd1",
+  "Germany": "#b08530", "France": "#3fa2cf", "Netherlands": "#e06f2a", "Italy": "#d0609f",
+  "Unknown": "#9aa3b0",
+};
+const SPARE = ["#5c8f7b", "#c17a5a", "#7a83c9", "#a99a3a", "#b0647a", "#4f9fb5"];
+function colorOf(nation) {
+  if (!NATION_COLORS[nation]) NATION_COLORS[nation] = SPARE[Object.keys(NATION_COLORS).length % SPARE.length];
+  return NATION_COLORS[nation];
+}
+
+/* ============================================================
+   State
+   ============================================================ */
+const store = (() => { try { return window.localStorage; } catch { return null; } })();
+const sget = k => { try { return store?.getItem(k); } catch { return null; } };
+const sset = (k, v) => { try { store?.setItem(k, v); } catch {} };
+
+let DB = null;
+const state = {
+  rootId: null, selId: null, mode: "anc", gens: 5, highlight: null,
+  expanded: new Set(), collapsed: new Set(),
+};
+
+const svg = d3.select("#chart");
+const gZoom = svg.append("g");
+const gLinks = gZoom.append("g");
+const gNodes = gZoom.append("g");
+const zoom = d3.zoom().scaleExtent([0.08, 2.5]).on("zoom", e => gZoom.attr("transform", e.transform));
+svg.call(zoom).on("dblclick.zoom", null);
+
+const CARD_W = 214, CARD_H = 50, COL_GAP = 70, ROW_GAP = 16;
+
+function lifespan(p) {
+  const b = p.by ? (approx(p.birth?.date) ? "c." + p.by : p.by) : "";
+  const d = p.dy ? (approx(p.death?.date) ? "c." + p.dy : p.dy) : "";
+  if (!b && !d) return "dates unknown";
+  return `${b || "?"} – ${d || ""}`.trim();
+}
+function shortPlace(place) {
+  if (!place) return "";
+  const parts = place.split(",").map(s => s.trim()).filter(Boolean);
+  return parts.length > 2 ? `${parts[0]}, ${parts[parts.length - 2]}` : parts.join(", ");
+}
+function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+
+/* ---------- hierarchy builders ---------- */
+function parentsOf(p) {
+  for (const fid of p.famc) {
+    const f = DB.fams.get(fid);
+    if (f && (f.husb || f.wife)) return [DB.people.get(f.husb), DB.people.get(f.wife)];
+  }
+  return [undefined, undefined];
+}
+function hasParents(p) { const [a, b] = parentsOf(p); return !!(a || b); }
+function childrenOf(p) {
+  const out = [];
+  for (const fid of p.fams) {
+    const f = DB.fams.get(fid); if (!f) continue;
+    const spouseId = f.husb === p.id ? f.wife : f.husb;
+    for (const cid of f.chil) { const c = DB.people.get(cid); if (c && !out.some(o => o.c === c)) out.push({ c, spouse: DB.people.get(spouseId) }); }
+  }
+  out.sort((a, b) => (a.c.by ?? 9999) - (b.c.by ?? 9999));
+  return out;
+}
+function spousesOf(p) {
+  return p.fams.map(fid => DB.fams.get(fid)).filter(Boolean).map(f => ({ f, s: DB.people.get(f.husb === p.id ? f.wife : f.husb) }));
+}
+
+/* limit: generations remaining before this branch stops by default */
+function buildAnc(p, path, ahn, limit, seen) {
+  const node = { p, path, ahn, kids: [], more: false, repeat: seen.has(p.id) ? seen.get(p.id) : null };
+  if (!node.repeat) seen.set(p.id, ahn);
+  const canGo = hasParents(p) && !node.repeat;
+  let lim = limit;
+  if (state.expanded.has(path)) lim = Math.max(lim, 4);
+  if (state.collapsed.has(path)) lim = 0;
+  if (canGo && lim > 0 && path.length < 60) {
+    const [fa, mo] = parentsOf(p);
+    if (fa) node.kids.push(buildAnc(fa, path + "F", ahn * 2, lim - 1, seen));
+    if (mo) node.kids.push(buildAnc(mo, path + "M", ahn * 2 + 1, lim - 1, seen));
+  } else if (canGo) node.more = true;
+  return node;
+}
+function buildDesc(p, path, limit, seen, spouse) {
+  const node = { p, path, spouse, kids: [], more: false, repeat: seen.has(p.id) ? 1 : null };
+  seen.set(p.id, 1);
+  const kids = node.repeat ? [] : childrenOf(p);
+  let lim = limit;
+  if (state.expanded.has(path)) lim = Math.max(lim, 3);
+  if (state.collapsed.has(path)) lim = 0;
+  if (kids.length && lim > 0 && path.length < 60) {
+    kids.forEach((k, i) => node.kids.push(buildDesc(k.c, path + "." + i, lim - 1, seen, k.spouse)));
+  } else if (kids.length) node.more = true;
+  return node;
+}
+
+/* ============================================================
+   Render
+   ============================================================ */
+function render(fit) {
+  if (!DB) return;
+  const rootP = DB.people.get(state.rootId);
+  const data = state.mode === "anc"
+    ? buildAnc(rootP, "", 1, state.gens - 1, new Map())
+    : buildDesc(rootP, "", state.gens - 1, new Map());
+  const h = d3.hierarchy(data, d => d.kids);
+  d3.tree().nodeSize([CARD_H + ROW_GAP, CARD_W + COL_GAP]).separation((a, b) => a.parent === b.parent ? 1 : 1.15)(h);
+
+  const nodes = h.descendants(), links = h.links();
+  const tailNation = l => l.target.data.p.nation; // the line leading to a person carries that person's birth nation
+  const dimLink = l => state.highlight && tailNation(l) !== state.highlight;
+  const dimNode = d => state.highlight && d.data.p.nation !== state.highlight;
+
+  const linkGen = d3.linkHorizontal()
+    .source(l => [l.source.y + CARD_W, l.source.x])
+    .target(l => [l.target.y, l.target.x]);
+
+  gLinks.selectAll("path.link").data(links, l => l.target.data.path)
+    .join("path")
+    .attr("class", l => "link" + (tailNation(l) === "Unknown" ? " unknown" : ""))
+    .attr("stroke", l => colorOf(tailNation(l)))
+    .attr("d", linkGen)
+    .classed("dim", dimLink);
+
+  const sel = gNodes.selectAll("g.node").data(nodes, d => d.data.path)
+    .join(enter => {
+      const g = enter.append("g").attr("class", "node");
+      g.append("rect").attr("class", "card").attr("rx", 5).attr("width", CARD_W).attr("height", CARD_H).attr("y", -CARD_H / 2);
+      g.append("rect").attr("class", "chip").attr("width", 5).attr("height", CARD_H).attr("y", -CARD_H / 2).attr("rx", 2);
+      g.append("text").attr("class", "nm").attr("x", 14).attr("y", -6);
+      g.append("text").attr("class", "sub").attr("x", 14).attr("y", 12);
+      g.append("text").attr("class", "ahn").attr("x", CARD_W - 2).attr("y", -CARD_H / 2 - 3).attr("text-anchor", "end");
+      const t = g.append("g").attr("class", "toggle").attr("transform", `translate(${CARD_W + 12},0)`);
+      t.append("circle").attr("r", 9);
+      t.append("text");
+      return g;
+    });
+
+  sel.attr("transform", d => `translate(${d.y},${d.x})`)
+    .classed("root", d => d.depth === 0)
+    .classed("sel", d => d.data.p.id === state.selId)
+    .classed("dim", dimNode)
+    .on("click", (e, d) => { if (e.target.closest(".toggle")) return; select(d.data.p.id); })
+    .on("dblclick", (e, d) => { if (e.target.closest(".toggle")) return; setRoot(d.data.p.id); });
+
+  sel.select("rect.chip").attr("fill", d => colorOf(d.data.p.nation));
+  sel.select("text.nm").text(d => truncate(d.data.p.name, 25));
+  sel.select("text.sub").text(d => {
+    const p = d.data.p;
+    if (d.data.repeat) return `${lifespan(p)} · appears earlier`;
+    const place = shortPlace(p.birth?.place);
+    const extra = state.mode === "desc" && d.data.spouse ? `⚭ ${d.data.spouse.given.split(" ")[0]} ${d.data.spouse.surname}` : place;
+    return truncate(`${lifespan(p)}${extra ? " · " + extra : ""}`, 38);
+  });
+  sel.select("text.ahn").text(d => state.mode === "anc" ? (d.data.repeat ? `${d.data.ahn} = ${d.data.repeat}` : d.data.ahn) : "");
+  sel.select("title").remove();
+  sel.append("title").text(d => `${d.data.p.name}\n${lifespan(d.data.p)}\nBorn: ${d.data.p.birth?.place || "place unknown"}\nNation: ${d.data.p.nation}\nClick to inspect · double-click to centre the tree here`);
+
+  const tog = sel.select("g.toggle")
+    .attr("display", d => (d.data.more || d.children) && !d.data.repeat && d.depth > 0 ? null : "none")
+    .on("click", (e, d) => {
+      e.stopPropagation();
+      const k = d.data.path;
+      if (d.children) { state.collapsed.add(k); state.expanded.delete(k); }
+      else { state.collapsed.delete(k); state.expanded.add(k); }
+      render(false);
+    });
+  tog.select("text").text(d => d.children ? "−" : "+");
+  tog.selectAll("title").data(d => [d]).join("title").text(d => d.children ? "Hide this branch" : "Show more generations of this branch");
+
+  renderLegend(nodes);
+  if (fit) fitView();
+}
+
+function fitView() {
+  const b = gZoom.node().getBBox();
+  const W = svg.node().clientWidth, H = svg.node().clientHeight;
+  if (!b.width || !W) return;
+  const pad = 40;
+  const k = Math.min(1.1, Math.max(0.08, Math.min((W - pad * 2) / b.width, (H - pad * 2) / b.height)));
+  const t = d3.zoomIdentity.translate(W / 2 - k * (b.x + b.width / 2), H / 2 - k * (b.y + b.height / 2)).scale(k);
+  svg.transition().duration(matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 450).call(zoom.transform, t);
+}
+
+/* ---------- legend ---------- */
+function renderLegend(nodes) {
+  const counts = new Map();
+  for (const d of nodes) if (d.depth > 0 && !d.data.repeat) counts.set(d.data.p.nation, (counts.get(d.data.p.nation) || 0) + 1);
+  const rootN = nodes[0].data.p.nation;
+  if (!counts.size) counts.set(rootN, 0);
+  const rows = [...counts].sort((a, b) => (a[0] === "Unknown") - (b[0] === "Unknown") || b[1] - a[1]);
+  const el = document.getElementById("legend");
+  const open = el.querySelector("details")?.open ?? !matchMedia("(max-width: 760px)").matches;
+  el.innerHTML = `<details ${open ? "open" : ""}><summary><h3>Nation of birth · ${nodes.length - 1} shown</h3></summary><ul>${rows.map(([n, c]) =>
+    `<li><button data-n="${n}" aria-pressed="${state.highlight === n}"><span class="sw ${n === "Unknown" ? "unknown" : ""}" style="border-color:${colorOf(n)}"></span><span>${n}</span><span class="ct">${c}</span></button></li>`).join("")}</ul>
+    <p class="note">Each line is coloured by the birth nation of the person it leads to. Click a nation to trace it.</p></details>`;
+  el.querySelectorAll("button[data-n]").forEach(b => b.onclick = () => {
+    state.highlight = state.highlight === b.dataset.n ? null : b.dataset.n; render(false);
+  });
+}
+
+/* ---------- drawer ---------- */
+const TAGS = { BIRT: "Born", DEAT: "Died", BURI: "Buried", RESI: "Residence", BAPM: "Baptised", CHR: "Christened", MARR: "Married", DIV: "Divorced", PROB: "Probate", EDUC: "Education", EVEN: "Event", _MILT: "Military", CENS: "Census", IMMI: "Immigrated", EMIG: "Emigrated", NATU: "Naturalised", OCCU: "Occupation" };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const personBtn = (p, label) => p ? `<li><button data-id="${esc(p.id)}"><span>${label ? `<span class="lab">${label}</span> ` : ""}${esc(p.name)}</span><span class="yrs">${esc(lifespan(p))}</span></button></li>` : "";
+
+function select(id) {
+  state.selId = id;
+  const p = DB.people.get(id);
+  const el = document.getElementById("drawer");
+  el.hidden = false;
+  const [fa, mo] = parentsOf(p);
+  const sp = spousesOf(p);
+  const kids = childrenOf(p);
+  const sibs = new Set();
+  for (const fid of p.famc) for (const c of DB.fams.get(fid)?.chil || []) if (c !== p.id) sibs.add(DB.people.get(c));
+  const evs = [...p.events].sort((a, b) => (yearOf(a.date) ?? 9999) - (yearOf(b.date) ?? 9999));
+  for (const { f } of sp) {
+    if (f.marr && (f.marr.date || f.marr.place)) evs.push({ tag: "MARR", ...f.marr });
+    if (f.div && (f.div.date || f.div.place)) evs.push({ tag: "DIV", ...f.div });
+  }
+  evs.sort((a, b) => (yearOf(a.date) ?? 9999) - (yearOf(b.date) ?? 9999));
+  el.innerHTML = `
+    <div class="eyebrow"><span>${p.sex === "M" ? "Male" : p.sex === "F" ? "Female" : "Sex unknown"} · ${p.sources} source citation${p.sources === 1 ? "" : "s"}</span><button class="x" id="close" aria-label="Close">×</button></div>
+    <h2>${esc(p.name)}</h2>
+    <div class="life">${esc(lifespan(p))}</div>
+    <div class="nation"><i style="border-color:${colorOf(p.nation)}"></i>${esc(p.nation)}</div>
+    <div class="actions">
+      ${id !== state.rootId ? `<button class="btn" id="mkroot">Centre tree on this person</button>` : `<span class="hint">This person is the root of the tree.</span>`}
+    </div>
+    ${evs.length ? `<h4>Life events</h4><dl class="facts">${evs.map(e => `<dt>${esc(TAGS[e.tag] || e.tag)}</dt><dd><div class="d">${esc(e.date || "date unknown")}${e.tag === "EVEN" && e.type ? " · " + esc(e.type) : ""}</div>${e.place ? `<div class="p">${esc(e.place)}</div>` : ""}${e.note ? `<div class="p">${esc(e.note)}</div>` : ""}</dd>`).join("")}</dl>` : ""}
+    ${fa || mo ? `<h4>Parents</h4><ul class="rel">${personBtn(fa, "Father")}${personBtn(mo, "Mother")}</ul>` : `<h4>Parents</h4><p class="hint">No parents recorded.</p>`}
+    ${sp.length ? `<h4>Spouses</h4><ul class="rel">${sp.map(({ s }) => personBtn(s)).join("")}</ul>` : ""}
+    ${kids.length ? `<h4>Children (${kids.length})</h4><ul class="rel">${kids.map(k => personBtn(k.c)).join("")}</ul>` : ""}
+    ${sibs.size ? `<h4>Siblings (${sibs.size})</h4><ul class="rel">${[...sibs].filter(Boolean).sort((a, b) => (a.by ?? 9999) - (b.by ?? 9999)).map(s => personBtn(s)).join("")}</ul>` : ""}
+    ${p.altNames.length ? `<h4>Also recorded as</h4><ul class="notes">${p.altNames.map(n => `<li>${esc([n.given, n.surname, n.suffix].filter(Boolean).join(" "))}</li>`).join("")}</ul>` : ""}
+    ${p.notes.length ? `<h4>Notes</h4><ul class="notes">${p.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${p.famc.length > 1 ? `<p class="hint">Linked to ${p.famc.length} sets of parents; the tree follows the first.</p>` : ""}
+    <div class="id">${esc(p.id)}</div>`;
+  el.querySelector("#close").onclick = () => { el.hidden = true; state.selId = null; render(false); };
+  el.querySelector("#mkroot")?.addEventListener("click", () => setRoot(id));
+  el.querySelectorAll(".rel button").forEach(b => b.onclick = () => select(b.dataset.id));
+  el.scrollTop = 0;
+  render(false);
+}
+
+function setRoot(id) {
+  state.rootId = id; state.expanded.clear(); state.collapsed.clear();
+  sset("ft.root", id);
+  try { history.replaceState(null, "", "#" + id.replace(/@/g, "")); } catch {}
+  select(id);
+  fitView();
+}
+
+/* ---------- search ---------- */
+const q = document.getElementById("q"), results = document.getElementById("results");
+let hits = [], hitIdx = 0;
+q.addEventListener("input", () => {
+  const terms = q.value.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!DB || !terms.length) { results.hidden = true; return; }
+  const yr = terms.find(t => /^\d{4}$/.test(t));
+  const words = terms.filter(t => t !== yr);
+  hits = [];
+  for (const p of DB.people.values()) {
+    const n = p.name.toLowerCase();
+    if (words.every(w => n.includes(w)) && (!yr || p.by === +yr || p.dy === +yr)) hits.push(p);
+  }
+  hits.sort((a, b) => a.surname.localeCompare(b.surname) || a.given.localeCompare(b.given) || (a.by ?? 0) - (b.by ?? 0));
+  const total = hits.length; hits = hits.slice(0, 40); hitIdx = 0;
+  results.innerHTML = hits.length
+    ? hits.map((p, i) => `<button data-id="${esc(p.id)}" class="${i === 0 ? "active" : ""}"><span>${esc(p.name)}</span><span class="yrs">${esc(lifespan(p))}</span></button>`).join("") + (total > 40 ? `<div class="hint" style="padding:7px 10px">${total - 40} more — add a birth year to narrow</div>` : "")
+    : `<div class="hint" style="padding:7px 10px">No one matches “${esc(q.value)}”.</div>`;
+  results.hidden = false;
+  results.querySelectorAll("button").forEach(b => b.onclick = () => pick(b.dataset.id));
+});
+q.addEventListener("keydown", e => {
+  if (results.hidden || !hits.length) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault(); hitIdx = (hitIdx + (e.key === "ArrowDown" ? 1 : hits.length - 1)) % hits.length;
+    results.querySelectorAll("button").forEach((b, i) => b.classList.toggle("active", i === hitIdx));
+    results.querySelectorAll("button")[hitIdx].scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter") { e.preventDefault(); pick(hits[hitIdx].id); }
+  else if (e.key === "Escape") results.hidden = true;
+});
+document.addEventListener("click", e => { if (!e.target.closest(".search")) results.hidden = true; });
+function pick(id) { results.hidden = true; q.value = ""; q.blur(); setRoot(id); }
+
+/* ---------- controls ---------- */
+function setMode(m) {
+  state.mode = m; state.expanded.clear(); state.collapsed.clear();
+  document.getElementById("mode-anc").setAttribute("aria-pressed", m === "anc");
+  document.getElementById("mode-desc").setAttribute("aria-pressed", m === "desc");
+  render(true);
+}
+document.getElementById("mode-anc").onclick = () => setMode("anc");
+document.getElementById("mode-desc").onclick = () => setMode("desc");
+function setGens(n) {
+  state.gens = Math.max(2, Math.min(14, n));
+  document.getElementById("gen-val").textContent = state.gens;
+  state.expanded.clear(); state.collapsed.clear();
+  render(true);
+}
+document.getElementById("gen-minus").onclick = () => setGens(state.gens - 1);
+document.getElementById("gen-plus").onclick = () => setGens(state.gens + 1);
+document.getElementById("fit").onclick = fitView;
+addEventListener("resize", () => { clearTimeout(window.__rz); window.__rz = setTimeout(fitView, 200); });
+
+/* ---------- loading ---------- */
+function load(text, label) {
+  DB = parseGedcom(text);
+  if (!DB.people.size) { document.getElementById("stats").textContent = "That file contains no individuals (INDI records)."; return; }
+  const nations = new Set([...DB.people.values()].map(p => p.nation));
+  nations.delete("Unknown");
+  document.getElementById("stats").textContent =
+    `${DB.people.size.toLocaleString()} people · ${DB.fams.size.toLocaleString()} families · ${nations.size} birth nations${label ? " · " + label : ""}`;
+  document.getElementById("empty").hidden = true;
+  document.getElementById("legend").hidden = false;
+  const hashId = location.hash ? "@" + location.hash.slice(1) + "@" : null;
+  const saved = sget("ft.root");
+  state.rootId = [hashId, saved].find(id => id && DB.people.has(id)) || DB.people.keys().next().value;
+  state.selId = null;
+  select(state.rootId);
+  fitView();
+}
+function readFile(f) {
+  const r = new FileReader();
+  r.onload = () => load(String(r.result), f.name);
+  r.readAsText(f);
+}
+document.getElementById("file").addEventListener("change", e => e.target.files[0] && readFile(e.target.files[0]));
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("drop", e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) readFile(f); });
+
+const embedded = document.getElementById("gedcom-data").textContent.replace(/<\\\/script/gi, "</script");
+if (embedded.trim() && embedded.trim() !== "/*GEDCOM*/") load(embedded);
+else { document.getElementById("empty").hidden = false; document.getElementById("stats").textContent = "No file loaded"; document.getElementById("legend").hidden = true; }
+</script>

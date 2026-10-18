@@ -1,0 +1,4 @@
+# Genealogy data includes living people; keep it out of this public repository.
+*.ged
+*.gedcom
+dist/
