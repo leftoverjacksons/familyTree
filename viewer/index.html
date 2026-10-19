@@ -97,6 +97,8 @@ button, input, select { font: inherit; color: inherit; }
 .node rect.card { fill: var(--card); stroke: var(--rule); stroke-width: 1; }
 .node.sel rect.card { fill: var(--card-sel); stroke: var(--accent); stroke-width: 1.5; }
 .node.root rect.card { stroke: var(--accent); stroke-width: 1.5; }
+.node.v .nm, .node.v .sub, .node.v .pl { text-anchor: middle; }
+.node .pl { font-size: 11px; fill: var(--muted); }
 .node .nm { font-family: var(--font-display); font-weight: 600; font-size: 14px; fill: var(--ink); }
 .node .sub { font-size: 11.5px; fill: var(--muted); font-variant-numeric: tabular-nums; }
 .node .ahn { font-family: var(--font-mono); font-size: 10px; fill: var(--muted); }
@@ -184,6 +186,10 @@ button, input, select { font: inherit; color: inherit; }
     <div class="seg" role="group" aria-label="Direction">
       <button id="mode-anc" aria-pressed="true">Ancestors</button>
       <button id="mode-desc" aria-pressed="false">Descendants</button>
+    </div>
+    <div class="seg" role="group" aria-label="Layout">
+      <button id="orient-h" aria-pressed="true" title="Generations run left to right">Horizontal</button>
+      <button id="orient-v" aria-pressed="false" title="Generations run top to bottom, like a printed family tree">Vertical</button>
     </div>
     <div class="gen" aria-label="Generations shown">
       Generations
@@ -390,7 +396,7 @@ const sset = (k, v) => { try { store?.setItem(k, v); } catch {} };
 
 let DB = null;
 const state = {
-  rootId: null, selId: null, mode: "anc", gens: 5, highlight: null,
+  rootId: null, selId: null, mode: "anc", orient: sget("ft.orient") === "v" ? "v" : "h", gens: 5, highlight: null,
   expanded: new Set(), collapsed: new Set(),
 };
 
@@ -401,7 +407,11 @@ const gNodes = gZoom.append("g");
 const zoom = d3.zoom().scaleExtent([0.08, 2.5]).on("zoom", e => gZoom.attr("transform", e.transform));
 svg.call(zoom).on("dblclick.zoom", null);
 
-const CARD_W = 214, CARD_H = 50, COL_GAP = 70, ROW_GAP = 16;
+/* Card geometry per layout. "across" spaces siblings, "step" spaces generations. */
+const LAYOUTS = {
+  h: { w: 214, h: 50, across: 66, step: 284, nameChars: 25, subChars: 38 },
+  v: { w: 156, h: 60, across: 170, step: 120, nameChars: 20, subChars: 25 },
+};
 
 function lifespan(p) {
   const b = p.by ? (approx(p.birth?.date) ? "c." + p.by : p.by) : "";
@@ -477,16 +487,23 @@ function render(fit) {
     ? buildAnc(rootP, "", 1, state.gens - 1, new Map())
     : buildDesc(rootP, "", state.gens - 1, new Map());
   const h = d3.hierarchy(data, d => d.kids);
-  d3.tree().nodeSize([CARD_H + ROW_GAP, CARD_W + COL_GAP]).separation((a, b) => a.parent === b.parent ? 1 : 1.15)(h);
+  const L = LAYOUTS[state.orient], V = state.orient === "v", W = L.w, H = L.h;
+  d3.tree().nodeSize([L.across, L.step]).separation((a, b) => a.parent === b.parent ? 1 : 1.15)(h);
+  // Card centres. Vertical: ancestors rise above the root, descendants fall below it.
+  const up = state.mode === "anc" ? -1 : 1;
+  for (const d of h.descendants()) {
+    d.cx = V ? d.x : d.y + W / 2;
+    d.cy = V ? up * d.y : d.x;
+  }
 
   const nodes = h.descendants(), links = h.links();
   const tailNation = l => l.target.data.p.nation; // the line leading to a person carries that person's birth nation
   const dimLink = l => state.highlight && tailNation(l) !== state.highlight;
   const dimNode = d => state.highlight && d.data.p.nation !== state.highlight;
 
-  const linkGen = d3.linkHorizontal()
-    .source(l => [l.source.y + CARD_W, l.source.x])
-    .target(l => [l.target.y, l.target.x]);
+  const linkGen = V
+    ? d3.linkVertical().source(l => [l.source.cx, l.source.cy + up * H / 2]).target(l => [l.target.cx, l.target.cy - up * H / 2])
+    : d3.linkHorizontal().source(l => [l.source.cx + W / 2, l.source.cy]).target(l => [l.target.cx - W / 2, l.target.cy]);
 
   gLinks.selectAll("path.link").data(links, l => l.target.data.path)
     .join("path")
@@ -498,33 +515,45 @@ function render(fit) {
   const sel = gNodes.selectAll("g.node").data(nodes, d => d.data.path)
     .join(enter => {
       const g = enter.append("g").attr("class", "node");
-      g.append("rect").attr("class", "card").attr("rx", 5).attr("width", CARD_W).attr("height", CARD_H).attr("y", -CARD_H / 2);
-      g.append("rect").attr("class", "chip").attr("width", 5).attr("height", CARD_H).attr("y", -CARD_H / 2).attr("rx", 2);
-      g.append("text").attr("class", "nm").attr("x", 14).attr("y", -6);
-      g.append("text").attr("class", "sub").attr("x", 14).attr("y", 12);
-      g.append("text").attr("class", "ahn").attr("x", CARD_W - 2).attr("y", -CARD_H / 2 - 3).attr("text-anchor", "end");
-      const t = g.append("g").attr("class", "toggle").attr("transform", `translate(${CARD_W + 12},0)`);
+      g.append("rect").attr("class", "card").attr("rx", 5);
+      g.append("rect").attr("class", "chip").attr("rx", 2);
+      g.append("text").attr("class", "nm");
+      g.append("text").attr("class", "sub");
+      g.append("text").attr("class", "pl");
+      g.append("text").attr("class", "ahn").attr("text-anchor", "end");
+      const t = g.append("g").attr("class", "toggle");
       t.append("circle").attr("r", 9);
       t.append("text");
       return g;
     });
 
-  sel.attr("transform", d => `translate(${d.y},${d.x})`)
+  // Geometry is set on every render so switching layout restyles existing cards.
+  sel.attr("transform", d => `translate(${d.cx - W / 2},${d.cy - H / 2})`)
+    .classed("v", V)
     .classed("root", d => d.depth === 0)
     .classed("sel", d => d.data.p.id === state.selId)
     .classed("dim", dimNode)
     .on("click", (e, d) => { if (e.target.closest(".toggle")) return; select(d.data.p.id); })
     .on("dblclick", (e, d) => { if (e.target.closest(".toggle")) return; setRoot(d.data.p.id); });
+  sel.select("rect.card").attr("width", W).attr("height", H);
+  sel.select("rect.chip").attr("width", V ? W : 5).attr("height", V ? 5 : H);
+  sel.select("text.nm").attr("x", V ? W / 2 : 14).attr("y", V ? 23 : H / 2 - 6);
+  sel.select("text.sub").attr("x", V ? W / 2 : 14).attr("y", V ? 39 : H / 2 + 12);
+  sel.select("text.pl").attr("x", W / 2).attr("y", 53);
+  sel.select("text.ahn").attr("x", W - 2).attr("y", -3);
+  sel.select("g.toggle").attr("transform", V ? `translate(${W / 2},${state.mode === "anc" ? -13 : H + 13})` : `translate(${W + 12},${H / 2})`);
 
   sel.select("rect.chip").attr("fill", d => colorOf(d.data.p.nation));
-  sel.select("text.nm").text(d => truncate(d.data.p.name, 25));
+  sel.select("text.nm").text(d => truncate(d.data.p.name, L.nameChars));
+  const spouseOf = d => state.mode === "desc" && d.data.spouse ? `⚭ ${d.data.spouse.given.split(" ")[0]} ${d.data.spouse.surname}` : "";
   sel.select("text.sub").text(d => {
     const p = d.data.p;
     if (d.data.repeat) return `${lifespan(p)} · appears earlier`;
-    const place = shortPlace(p.birth?.place);
-    const extra = state.mode === "desc" && d.data.spouse ? `⚭ ${d.data.spouse.given.split(" ")[0]} ${d.data.spouse.surname}` : place;
-    return truncate(`${lifespan(p)}${extra ? " · " + extra : ""}`, 38);
+    if (V) return truncate(lifespan(p), L.subChars);
+    const extra = spouseOf(d) || shortPlace(p.birth?.place);
+    return truncate(`${lifespan(p)}${extra ? " · " + extra : ""}`, L.subChars);
   });
+  sel.select("text.pl").text(d => V && !d.data.repeat ? truncate(spouseOf(d) || shortPlace(d.data.p.birth?.place), L.subChars) : "");
   sel.select("text.ahn").text(d => state.mode === "anc" ? (d.data.repeat ? `${d.data.ahn} = ${d.data.repeat}` : d.data.ahn) : "");
   sel.select("title").remove();
   sel.append("title").text(d => `${d.data.p.name}\n${lifespan(d.data.p)}\nBorn: ${d.data.p.birth?.place || "place unknown"}\nNation: ${d.data.p.nation}\nClick to inspect · double-click to centre the tree here`);
@@ -667,6 +696,17 @@ function setMode(m) {
 }
 document.getElementById("mode-anc").onclick = () => setMode("anc");
 document.getElementById("mode-desc").onclick = () => setMode("desc");
+function setOrient(o) {
+  state.orient = o;
+  sset("ft.orient", o);
+  document.getElementById("orient-h").setAttribute("aria-pressed", o === "h");
+  document.getElementById("orient-v").setAttribute("aria-pressed", o === "v");
+  render(true);
+}
+document.getElementById("orient-h").onclick = () => setOrient("h");
+document.getElementById("orient-v").onclick = () => setOrient("v");
+document.getElementById("orient-h").setAttribute("aria-pressed", state.orient === "h");
+document.getElementById("orient-v").setAttribute("aria-pressed", state.orient === "v");
 function setGens(n) {
   state.gens = Math.max(2, Math.min(14, n));
   document.getElementById("gen-val").textContent = state.gens;

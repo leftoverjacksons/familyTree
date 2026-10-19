@@ -21,6 +21,7 @@ genealogy exports contain living people.
 ## Viewer
 
 - **Ancestors / Descendants** — direction of the chart from the selected root.
+- **Horizontal / Vertical** — generations run left to right, or top to bottom like a printed family tree (ancestors above the root, descendants below). The choice is remembered.
 - **Generations** — default depth; the `+`/`−` circle on any card expands or hides that branch.
 - Click a card to open the person's record; double-click (or *Centre tree on this person*) to re-root.
 - Ancestor cards carry their Ahnentafel number (root = 1, father = 2n, mother = 2n+1).
