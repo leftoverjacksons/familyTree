@@ -99,6 +99,27 @@ button, input, select { font: inherit; color: inherit; }
 .toggle text { font-size: 12px; fill: var(--ink); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
 .toggle:hover circle { stroke: var(--accent); }
 .dim { opacity: .12; }
+/* timeline */
+.tl-grid line { stroke: var(--rule); stroke-width: 1; opacity: .55; }
+.tl-grid line.major { opacity: 1; }
+.tl-axis .band { fill: var(--surface); opacity: .92; }
+.tl-axis text { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-axis text.major { fill: var(--ink); font-weight: 600; }
+.tl-link { fill: none; stroke-width: 2.2; stroke-linejoin: round; transition: opacity .2s; }
+.tl-link.stem { stroke: var(--muted); stroke-width: 1.4; }
+.tl-link.unknown { stroke-dasharray: 4 5; }
+.life { cursor: pointer; transition: opacity .2s; }
+.life .bar { stroke-width: 5; stroke-linecap: round; }
+.life .tail { stroke-width: 5; stroke-linecap: round; stroke-dasharray: 2 6; opacity: .6; }
+.life .dot { fill: var(--surface); stroke-width: 2.5; }
+.life .dot.est { stroke-dasharray: 2 2; }
+.life .lbl { paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+.life .lbl .nm { font-family: var(--font-display); font-weight: 600; font-size: 13px; fill: var(--ink); }
+.life .lbl .yrs { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.life.sel .lbl .nm, .life.root .lbl .nm { fill: var(--accent); }
+.life.sel .bar { stroke-width: 7; }
+.ring circle { fill: var(--surface); stroke: var(--ink); stroke-width: 1.8; }
+.ring.est circle { stroke: var(--muted); stroke-dasharray: 2 2; }
 .empty {
   position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--muted);
 }
@@ -182,6 +203,10 @@ button, input, select { font: inherit; color: inherit; }
     <div class="seg" role="group" aria-label="Layout">
       <button id="orient-h" aria-pressed="true" title="Generations run left to right">Horizontal</button>
       <button id="orient-v" aria-pressed="false" title="Generations run top to bottom, like a printed family tree">Vertical</button>
+    </div>
+    <div class="seg" role="group" aria-label="Spacing">
+      <button id="scale-gen" aria-pressed="true" title="Each generation one step apart">Generations</button>
+      <button id="scale-time" aria-pressed="false" title="Births, deaths and marriages placed on a year axis">Timeline</button>
     </div>
     <div class="gen" aria-label="Generations shown">
       Generations
@@ -388,7 +413,7 @@ const sset = (k, v) => { try { store?.setItem(k, v); } catch {} };
 
 let DB = null;
 const state = {
-  rootId: null, selId: null, mode: "anc", orient: sget("ft.orient") === "v" ? "v" : "h", gens: 5, highlight: null,
+  rootId: null, selId: null, mode: "anc", scale: sget("ft.scale") === "time" ? "time" : "gen", orient: sget("ft.orient") === "v" ? "v" : "h", gens: 5, highlight: null,
   expanded: new Set(), collapsed: new Set(),
 };
 
@@ -396,7 +421,7 @@ const svg = d3.select("#chart");
 const gZoom = svg.append("g");
 const gLinks = gZoom.append("g");
 const gNodes = gZoom.append("g");
-const zoom = d3.zoom().scaleExtent([0.08, 2.5]).on("zoom", e => gZoom.attr("transform", e.transform));
+const zoom = d3.zoom().scaleExtent([0.08, 2.5]).on("zoom", e => { gZoom.attr("transform", e.transform); drawAxis(e.transform); });
 svg.call(zoom).on("dblclick.zoom", null);
 
 /* Card geometry per layout. "across" spaces siblings, "step" spaces generations. */
@@ -404,6 +429,193 @@ const LAYOUTS = {
   h: { w: 214, h: 50, across: 66, step: 284, nameChars: 25, subChars: 38 },
   v: { w: 156, h: 60, across: 170, step: 120, nameChars: 20, subChars: 25 },
 };
+
+/* ============================================================
+   Timeline layout: the generation axis becomes a year axis.
+   Each person is a lifeline from birth to death; a parents' marriage is a
+   ring at its year, from which the lines to father and mother branch.
+   ============================================================ */
+const TL = {
+  h: { across: 36, pxYear: 7 },
+  v: { across: 124, pxYear: 6 },
+};
+const NOW = new Date().getFullYear();
+const gGrid = svg.insert("g", ":first-child").attr("class", "tl-grid");
+const gTime = gZoom.append("g");
+const gAxis = svg.append("g").attr("class", "tl-axis");
+let timeScale = null;
+
+function parentFamOf(p) {
+  for (const fid of p.famc) {
+    const f = DB.fams.get(fid);
+    if (f && (f.husb || f.wife)) return f;
+  }
+  return null;
+}
+function famOfChild(parent, child) {
+  for (const fid of parent.fams) {
+    const f = DB.fams.get(fid);
+    if (f && f.chil.includes(child.id)) return f;
+  }
+  return null;
+}
+
+/* Rows (columns when vertical) are assigned in order: father's branch, the person,
+   then mother's branch; in descendant view the person sits in the middle of their
+   children. Every person gets a row of their own, so no two lifelines can overlap. */
+function assignRows(root) {
+  let row = 0;
+  (function visit(d) {
+    const kids = d.children || [];
+    const split = state.mode === "anc" ? kids.filter(k => k.data.path.endsWith("F")).length : Math.ceil(kids.length / 2);
+    kids.slice(0, split).forEach(visit);
+    d.x = row++;
+    kids.slice(split).forEach(visit);
+  })(root);
+}
+
+function renderTimeline(data) {
+  const V = state.orient === "v", T = TL[state.orient];
+  const h = d3.hierarchy(data, d => d.kids);
+  assignRows(h);
+  for (const d of h.descendants()) d.x *= T.across;
+  const people = h.descendants();
+
+  // Birth year, estimated a generation away from a known relative when missing.
+  const gen = state.mode === "anc" ? -28 : 28;
+  for (const d of h.descendants()) {
+    const p = d.data.p;
+    d.est = !p.by;
+    d.yr = p.by ?? (d.parent && d.parent.yr ? d.parent.yr + gen : (p.dy ? p.dy - 60 : NOW - 40));
+    d.end = p.dy ?? null;
+  }
+  const yrs = people.flatMap(d => [d.yr, d.end ?? Math.min(NOW, d.yr + 30)]);
+  const y0 = Math.floor((d3.min(yrs) - 10) / 10) * 10, y1 = Math.ceil((d3.max(yrs) + 1) / 10) * 10;
+  timeScale = d3.scaleLinear().domain([y0, y1]).range([0, (y1 - y0) * T.pxYear]);
+  const S = timeScale;
+  const pt = (year, across) => V ? [across, S(year)] : [S(year), across];
+  const P = (...pts) => "M" + pts.map(p => p.join(",")).join("L");
+
+  // Marriage junctions and connector lines.
+  const links = [], rings = [];
+  for (const d of people) {
+    const kids = d.children || [];
+    if (!kids.length) continue;
+    if (state.mode === "anc") {
+      const f = parentFamOf(d.data.p);
+      const my = yearOf(f?.marr?.date);
+      const m = my ?? d.yr - 1;
+      rings.push({ key: d.data.path, at: pt(m, d.x), est: !my, year: my, child: d });
+      links.push({ key: d.data.path + ">", d: P(pt(d.yr, d.x), pt(m, d.x)), nation: null, dim: d });
+      for (const q of kids) links.push({ key: q.data.path, d: P(pt(m, d.x), pt(m, q.x)), nation: q.data.p.nation, dim: q });
+    } else {
+      const byFam = new Map();
+      for (const k of kids) {
+        const f = famOfChild(d.data.p, k.data.p);
+        const my = yearOf(f?.marr?.date);
+        const m = my ?? (byFam.get(f) ?? k.yr - 1);
+        if (!byFam.has(f)) { byFam.set(f, m); rings.push({ key: d.data.path + "@" + (f?.id || k.data.path), at: pt(m, d.x), est: !my, year: my, child: k }); }
+        const mm = byFam.get(f);
+        links.push({ key: k.data.path, d: P(pt(mm, d.x), pt(mm, k.x), pt(k.yr, k.x)), nation: k.data.p.nation, dim: k });
+      }
+    }
+  }
+
+  const dimN = n => state.highlight && n !== state.highlight;
+  gTime.selectAll("path.tl-link").data(links, l => l.key).join("path")
+    .attr("class", l => "tl-link" + (l.nation ? "" : " stem") + (l.nation === "Unknown" ? " unknown" : ""))
+    .attr("stroke", l => l.nation ? colorOf(l.nation) : null)
+    .attr("d", l => l.d)
+    .classed("dim", l => l.nation ? dimN(l.nation) : !!state.highlight);
+
+  const lg = gTime.selectAll("g.life").data(people, d => d.data.path).join(enter => {
+    const g = enter.append("g").attr("class", "life");
+    g.append("line").attr("class", "bar");
+    g.append("line").attr("class", "tail");
+    g.append("circle").attr("class", "dot").attr("r", 4.5);
+    g.append("text").attr("class", "lbl");
+    const t = g.append("g").attr("class", "toggle");
+    t.append("circle").attr("r", 8);
+    t.append("text");
+    return g;
+  });
+  lg.classed("root", d => d.depth === 0).classed("sel", d => d.data.p.id === state.selId)
+    .classed("dim", d => dimN(d.data.p.nation)).classed("v", V)
+    .on("click", (e, d) => { if (e.target.closest(".toggle")) return; select(d.data.p.id); })
+    .on("dblclick", (e, d) => { if (e.target.closest(".toggle")) return; setRoot(d.data.p.id); });
+  const end = d => d.end ?? Math.min(NOW, d.yr + 30);
+  const setLine = (sel, a, b) => sel.each(function (d) {
+    const [x1, y1] = pt(a(d), d.x), [x2, y2] = pt(b(d), d.x);
+    d3.select(this).attr("x1", x1).attr("y1", y1).attr("x2", x2).attr("y2", y2);
+  });
+  setLine(lg.select("line.bar").attr("stroke", d => colorOf(d.data.p.nation)).attr("display", d => d.end ? null : "none"), d => d.yr, d => d.end ?? d.yr);
+  setLine(lg.select("line.tail").attr("stroke", d => colorOf(d.data.p.nation)).attr("display", d => d.end ? "none" : null), d => d.yr, end);
+  lg.select("circle.dot").attr("cx", d => pt(d.yr, d.x)[0]).attr("cy", d => pt(d.yr, d.x)[1])
+    .attr("stroke", d => colorOf(d.data.p.nation)).classed("est", d => d.est);
+  lg.select("text.lbl").each(function (d) {
+    const p = d.data.p, [x, y] = pt(d.yr, d.x);
+    const name = truncate(p.name, V ? 20 : 30);
+    const yrs = d.data.repeat ? "appears earlier" : (d.est ? "birth year unknown" : lifespan(p));
+    const t = d3.select(this).attr("text-anchor", V ? "middle" : "start");
+    t.selectAll("tspan").data([name, yrs]).join("tspan")
+      .attr("class", (s, i) => i ? "yrs" : "nm")
+      .attr("x", V ? x : x + 8)
+      .attr("y", V ? (s, i) => y + 18 + i * 13 : y - 8)
+      .attr("dx", V ? 0 : (s, i) => i ? 6 : 0)
+      .text(s => s);
+    if (!V) t.selectAll("tspan").attr("x", (s, i) => i ? null : x + 8).attr("y", (s, i) => i ? null : y - 8);
+  });
+  lg.select("g.toggle")
+    .attr("display", d => (d.data.more || d.children) && !d.data.repeat && d.depth > 0 ? null : "none")
+    .attr("transform", d => { const [x, y] = pt(d.yr, d.x); return V ? `translate(${x},${y - 16})` : `translate(${x - 16},${y})`; })
+    .on("click", (e, d) => {
+      e.stopPropagation();
+      const k = d.data.path;
+      if (d.children) { state.collapsed.add(k); state.expanded.delete(k); } else { state.collapsed.delete(k); state.expanded.add(k); }
+      render(false);
+    });
+  lg.select("g.toggle text").text(d => d.children ? "−" : "+");
+  lg.selectAll("title").data(d => [d]).join("title")
+    .text(d => `${d.data.p.name}\n${lifespan(d.data.p)}\nBorn: ${d.data.p.birth?.place || "place unknown"}\nNation: ${d.data.p.nation}${d.est ? "\nBirth year unknown: placed a generation from a relative" : ""}\nClick to inspect · double-click to centre the tree here`);
+
+  gTime.selectAll("g.ring").data(rings, r => r.key).join(enter => {
+    const g = enter.append("g").attr("class", "ring");
+    g.append("circle").attr("r", 4);
+    g.append("title");
+    return g;
+  }).attr("transform", r => `translate(${r.at[0]},${r.at[1]})`)
+    .classed("est", r => r.est)
+    .classed("dim", !!state.highlight)
+    .select("title").text(r => r.est ? "Marriage date not recorded; placed just before the first child's birth" : `Married ${r.year}`);
+
+  renderLegend(people);
+  drawAxis(d3.zoomTransform(svg.node()));
+  return people;
+}
+
+/* Year axis pinned to the top (horizontal) or left (vertical) edge, redrawn on every zoom. */
+function drawAxis(t) {
+  if (state.scale !== "time" || !timeScale) { gGrid.selectAll("*").remove(); gAxis.selectAll("*").remove(); return; }
+  const V = state.orient === "v";
+  const Wd = svg.node().clientWidth, Ht = svg.node().clientHeight;
+  const s = V ? t.rescaleY(timeScale) : t.rescaleX(timeScale);
+  const pxPerYear = Math.abs(s(1) - s(0));
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200].find(n => n * pxPerYear >= 46) || 500;
+  const [a, b] = s.domain();
+  const ticks = d3.range(Math.ceil(Math.min(a, b) / step) * step, Math.max(a, b) + 1, step)
+    .filter(y => { const v = s(y); return v >= 0 && v <= (V ? Ht : Wd); });
+  gGrid.selectAll("line").data(ticks, y => y).join("line")
+    .attr("class", y => y % 100 === 0 ? "major" : "")
+    .attr("x1", y => V ? 0 : s(y)).attr("x2", y => V ? Wd : s(y))
+    .attr("y1", y => V ? s(y) : 0).attr("y2", y => V ? s(y) : Ht);
+  gAxis.selectAll("rect.band").data([0]).join("rect").attr("class", "band")
+    .attr("width", V ? 46 : Wd).attr("height", V ? Ht : 24);
+  gAxis.selectAll("text").data(ticks, y => y).join("text")
+    .attr("class", y => y % 100 === 0 ? "major" : "")
+    .attr("x", y => V ? 40 : s(y)).attr("y", y => V ? s(y) + 4 : 16)
+    .attr("text-anchor", V ? "end" : "middle")
+    .text(y => y);
+}
 
 function lifespan(p) {
   const b = p.by ? (approx(p.birth?.date) ? "c." + p.by : p.by) : "";
@@ -478,6 +690,13 @@ function render(fit) {
   const data = state.mode === "anc"
     ? buildAnc(rootP, "", 1, state.gens - 1, new Map())
     : buildDesc(rootP, "", state.gens - 1, new Map());
+  if (state.scale === "time") {
+    gLinks.selectAll("*").remove(); gNodes.selectAll("*").remove();
+    renderTimeline(data);
+    if (fit) fitView();
+    return;
+  }
+  gTime.selectAll("*").remove(); timeScale = null; drawAxis(d3.zoomTransform(svg.node()));
   const h = d3.hierarchy(data, d => d.kids);
   const L = LAYOUTS[state.orient], V = state.orient === "v", W = L.w, H = L.h;
   d3.tree().nodeSize([L.across, L.step]).separation((a, b) => a.parent === b.parent ? 1 : 1.15)(h);
@@ -570,9 +789,9 @@ function fitView() {
   const b = gZoom.node().getBBox();
   const W = svg.node().clientWidth, H = svg.node().clientHeight;
   if (!b.width || !W) return;
-  const pad = 40;
-  const k = Math.min(1.1, Math.max(0.08, Math.min((W - pad * 2) / b.width, (H - pad * 2) / b.height)));
-  const t = d3.zoomIdentity.translate(W / 2 - k * (b.x + b.width / 2), H / 2 - k * (b.y + b.height / 2)).scale(k);
+  const pad = 40, axisH = state.scale === "time" && state.orient === "h" ? 24 : 0, axisW = state.scale === "time" && state.orient === "v" ? 46 : 0;
+  const k = Math.min(1.1, Math.max(0.08, Math.min((W - axisW - pad * 2) / b.width, (H - axisH - pad * 2) / b.height)));
+  const t = d3.zoomIdentity.translate(axisW + (W - axisW) / 2 - k * (b.x + b.width / 2), axisH + (H - axisH) / 2 - k * (b.y + b.height / 2)).scale(k);
   svg.transition().duration(matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 450).call(zoom.transform, t);
 }
 
@@ -696,6 +915,17 @@ function setOrient(o) {
   render(true);
 }
 document.getElementById("orient-h").onclick = () => setOrient("h");
+function setScale(v) {
+  state.scale = v;
+  sset("ft.scale", v);
+  document.getElementById("scale-gen").setAttribute("aria-pressed", v === "gen");
+  document.getElementById("scale-time").setAttribute("aria-pressed", v === "time");
+  render(true);
+}
+document.getElementById("scale-gen").onclick = () => setScale("gen");
+document.getElementById("scale-time").onclick = () => setScale("time");
+document.getElementById("scale-gen").setAttribute("aria-pressed", state.scale === "gen");
+document.getElementById("scale-time").setAttribute("aria-pressed", state.scale === "time");
 document.getElementById("orient-v").onclick = () => setOrient("v");
 document.getElementById("orient-h").setAttribute("aria-pressed", state.orient === "h");
 document.getElementById("orient-v").setAttribute("aria-pressed", state.orient === "v");
@@ -708,7 +938,7 @@ function setGens(n) {
 document.getElementById("gen-minus").onclick = () => setGens(state.gens - 1);
 document.getElementById("gen-plus").onclick = () => setGens(state.gens + 1);
 document.getElementById("fit").onclick = fitView;
-addEventListener("resize", () => { clearTimeout(window.__rz); window.__rz = setTimeout(fitView, 200); });
+addEventListener("resize", () => { clearTimeout(window.__rz); window.__rz = setTimeout(() => { drawAxis(d3.zoomTransform(svg.node())); fitView(); }, 200); });
 
 /* ---------- loading ---------- */
 function load(text, label) {

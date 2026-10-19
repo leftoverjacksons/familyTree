@@ -21,6 +21,7 @@ genealogy exports contain living people.
 ## Viewer
 
 - **Ancestors / Descendants** — direction of the chart from the selected root.
+- **Generations / Timeline** — space generations evenly, or place everyone on a year axis: each person is a lifeline from birth to death (dotted where no death is recorded), and each marriage is a ring at its year where the lines to the two parents branch. Hollow rings and dots mark estimated years.
 - **Horizontal / Vertical** — generations run left to right, or top to bottom like a printed family tree (ancestors above the root, descendants below). The choice is remembered.
 - **Generations** — default depth; the `+`/`−` circle on any card expands or hides that branch.
 - Click a card to open the person's record; double-click (or *Centre tree on this person*) to re-root.
